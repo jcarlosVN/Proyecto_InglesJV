@@ -12,6 +12,8 @@ class Settings(BaseSettings):
     GEMINI_API_KEY: str
     OPENAI_API_KEY: str = ""
     GEMINI_MODEL: str = "gemini-2.5-flash-native-audio-preview-12-2025"
+    GEMINI_TTS_MODEL: str = "gemini-2.5-flash-preview-tts"
+    GEMINI_TTS_VOICE: str = "Puck"
     HOST: str = "0.0.0.0"
     PORT: int = 8000
 

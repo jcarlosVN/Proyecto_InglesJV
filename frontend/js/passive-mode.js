@@ -17,6 +17,7 @@ export class PassiveMode {
         this.intervalMs = 60000; // default 1 min
         this.isActive = false;
         this._requesting = false;
+        this._currentAudioCtx = null;
     }
 
     start() {
@@ -43,6 +44,11 @@ export class PassiveMode {
             this.videoCapture.stop();
             this.videoCapture = null;
         }
+        if (this._currentAudioCtx) {
+            this._currentAudioCtx.close();
+            this._currentAudioCtx = null;
+        }
+        speechSynthesis.cancel();
     }
 
     setInterval(ms) {
@@ -102,7 +108,11 @@ export class PassiveMode {
             // Show topic and speak it
             if (data.text) {
                 this.onTopic?.(data.text);
-                this._speak(data.text);
+                if (data.audio) {
+                    this._playAudio(data.audio);
+                } else {
+                    this._speakFallback(data.text);
+                }
             }
 
             this.onStatus?.('Passive mode - topic suggested');
@@ -115,21 +125,57 @@ export class PassiveMode {
         }
     }
 
-    _speak(text) {
+    _playAudio(base64PcmData) {
+        // Stop any currently playing audio
+        if (this._currentAudioCtx) {
+            this._currentAudioCtx.close();
+            this._currentAudioCtx = null;
+        }
+        speechSynthesis.cancel();
+
+        const binaryString = atob(base64PcmData);
+        const bytes = new Uint8Array(binaryString.length);
+        for (let i = 0; i < binaryString.length; i++) {
+            bytes[i] = binaryString.charCodeAt(i);
+        }
+
+        const int16Array = new Int16Array(bytes.buffer);
+        const float32Array = new Float32Array(int16Array.length);
+        for (let i = 0; i < int16Array.length; i++) {
+            float32Array[i] = int16Array[i] / 32768.0;
+        }
+
+        const ctx = new AudioContext({ sampleRate: 24000 });
+        this._currentAudioCtx = ctx;
+        const audioBuffer = ctx.createBuffer(1, float32Array.length, 24000);
+        audioBuffer.getChannelData(0).set(float32Array);
+
+        const source = ctx.createBufferSource();
+        source.buffer = audioBuffer;
+        source.connect(ctx.destination);
+        source.start(0);
+        source.onended = () => {
+            ctx.close();
+            if (this._currentAudioCtx === ctx) {
+                this._currentAudioCtx = null;
+            }
+        };
+    }
+
+    _speakFallback(text) {
         speechSynthesis.cancel();
         const utterance = new SpeechSynthesisUtterance(text);
         utterance.lang = 'en-US';
         utterance.rate = 0.95;
         utterance.pitch = 1.0;
 
-        // Pick the most natural-sounding English voice available
         const voices = speechSynthesis.getVoices();
         const preferred = [
-            'Microsoft Jenny',   // Edge - very natural
-            'Microsoft Aria',    // Edge - natural
-            'Google US English', // Chrome - decent
-            'Samantha',          // macOS - natural
-            'Karen',             // macOS - Australian
+            'Microsoft Jenny',
+            'Microsoft Aria',
+            'Google US English',
+            'Samantha',
+            'Karen',
         ];
         for (const name of preferred) {
             const match = voices.find(v => v.name.includes(name) && v.lang.startsWith('en'));

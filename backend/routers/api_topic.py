@@ -19,13 +19,19 @@ class TopicRequest(BaseModel):
 
 class TopicResponse(BaseModel):
     text: str
+    audio: str | None = None
 
 
 @router.post("/api/suggest-topic", response_model=TopicResponse)
 async def suggest_topic_endpoint(req: TopicRequest):
     try:
-        result = await suggest_topic(settings.GEMINI_API_KEY, req.image)
-        return TopicResponse(text=result["text"])
+        result = await suggest_topic(
+            settings.GEMINI_API_KEY,
+            req.image,
+            tts_model=settings.GEMINI_TTS_MODEL,
+            tts_voice=settings.GEMINI_TTS_VOICE,
+        )
+        return TopicResponse(text=result["text"], audio=result.get("audio"))
     except Exception as e:
         logger.error(f"Topic suggestion failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))

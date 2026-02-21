@@ -1,12 +1,13 @@
 """
 Generates English topic suggestions from a single photo using Gemini standard API.
-Returns text; audio TTS is handled by the browser's SpeechSynthesis API.
+Two-step pipeline: Image → Text (gemini-2.5-flash), then Text → Audio (gemini TTS).
 """
 
 import base64
 import logging
 from google import genai
 from google.genai import types
+from google.genai.types import SpeechConfig, VoiceConfig, PrebuiltVoiceConfig
 
 logger = logging.getLogger(__name__)
 
@@ -43,16 +44,23 @@ IMPORTANT:
 """
 
 
-async def suggest_topic(api_key: str, jpeg_base64: str) -> dict:
+async def suggest_topic(
+    api_key: str,
+    jpeg_base64: str,
+    tts_model: str = "gemini-2.5-flash-preview-tts",
+    tts_voice: str = "Puck",
+) -> dict:
     """
-    Send a single photo to Gemini and get a topic suggestion (text only).
-    Audio is generated client-side via browser SpeechSynthesis.
+    Two-step pipeline:
+    1. Send photo to gemini-2.5-flash → get topic text
+    2. Send text to gemini TTS model → get audio (24kHz 16-bit PCM)
 
-    Returns: {"text": "..."}
+    Returns: {"text": "...", "audio": "<base64 PCM>" or None}
     """
     client = genai.Client(api_key=api_key)
     image_bytes = base64.b64decode(jpeg_base64)
 
+    # Step 1: Image → Text
     response = await client.aio.models.generate_content(
         model="gemini-2.5-flash",
         contents=[
@@ -63,4 +71,32 @@ async def suggest_topic(api_key: str, jpeg_base64: str) -> dict:
 
     text = response.text or ""
     logger.info(f"Topic suggested: {text[:80]}...")
-    return {"text": text}
+
+    # Step 2: Text → Audio (Gemini TTS)
+    audio_b64 = None
+    try:
+        tts_response = await client.aio.models.generate_content(
+            model=tts_model,
+            contents=f"Say in a friendly, enthusiastic, casual tone: {text}",
+            config=types.GenerateContentConfig(
+                response_modalities=["AUDIO"],
+                speech_config=SpeechConfig(
+                    voice_config=VoiceConfig(
+                        prebuilt_voice_config=PrebuiltVoiceConfig(
+                            voice_name=tts_voice,
+                        )
+                    )
+                ),
+            ),
+        )
+        pcm_data = tts_response.candidates[0].content.parts[0].inline_data.data
+        # Handle raw bytes vs base64 string inconsistency
+        if isinstance(pcm_data, bytes):
+            audio_b64 = base64.b64encode(pcm_data).decode("utf-8")
+        else:
+            audio_b64 = pcm_data  # already base64 string
+        logger.info("TTS audio generated successfully")
+    except Exception as e:
+        logger.warning(f"TTS generation failed, falling back to text-only: {e}")
+
+    return {"text": text, "audio": audio_b64}
