@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>InglesJV - English Learning</title>
+    <link rel="stylesheet" href="/static/css/styles.css">
+</head>
+<body>
+    <div id="app">
+        <header>
+            <h1>InglesJV</h1>
+            <div class="status-bar">
+                <span id="status-dot" class="status-dot idle"></span>
+                <span id="status">Ready to start</span>
+            </div>
+        </header>
+
+        <main>
+            <div class="session-area">
+                <!-- Camera Preview -->
+                <div class="camera-container">
+                    <video id="camera-preview" autoplay playsinline muted></video>
+                    <div class="camera-placeholder" id="camera-placeholder">
+                        <div class="camera-icon">&#128247;</div>
+                        <p>Camera preview will appear here</p>
+                    </div>
+                </div>
+
+                <!-- Passive Mode Controls -->
+                <div class="passive-controls" id="passive-controls">
+                    <label for="frequency-select">Suggest topics:</label>
+                    <select id="frequency-select">
+                        <option value="0">Paused</option>
+                        <option value="30000">Every 30s</option>
+                        <option value="60000" selected>Every 1 min</option>
+                        <option value="120000">Every 2 min</option>
+                        <option value="300000">Every 5 min</option>
+                    </select>
+                </div>
+
+                <!-- Topic Card -->
+                <div class="topic-card hidden" id="topic-card">
+                    <div class="topic-text" id="topic-text"></div>
+                    <button id="btn-start-conversation" class="btn btn-start-conversation">
+                        Start Conversation
+                    </button>
+                </div>
+
+                <!-- Controls -->
+                <div class="controls">
+                    <button id="btn-stop" class="btn btn-stop hidden">
+                        &#9632; Stop Session
+                    </button>
+                </div>
+
+                <!-- Transcript Area -->
+                <div class="transcript-container">
+                    <h2>Conversation</h2>
+                    <div id="transcript" class="transcript">
+                        <div class="transcript-empty">
+                            The AI tutor will periodically suggest English topics based on what your camera sees.
+                            Click "Start Conversation" to practice speaking about a topic.
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script type="module" src="/static/js/app.js"></script>
+</body>
+</html>
