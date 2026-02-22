@@ -21,16 +21,18 @@
                 <!-- Camera Preview -->
                 <div class="camera-container">
                     <video id="camera-preview" autoplay playsinline muted></video>
+                    <button id="btn-flip-camera" class="btn-flip-camera hidden" title="Switch camera">&#8635; Flip</button>
                     <div class="camera-placeholder" id="camera-placeholder">
                         <div class="camera-icon">&#128247;</div>
-                        <p>Camera preview will appear here</p>
+                        <p>Enable camera to get started</p>
+                        <button id="btn-enable-camera" class="btn btn-enable-camera">&#128247; Enable Camera &amp; Mic</button>
                     </div>
                 </div>
 
-                <!-- Passive Mode Controls -->
+                <!-- Passive Mode Controls (disabled until camera is on) -->
                 <div class="passive-controls" id="passive-controls">
                     <label for="frequency-select">Suggest topics:</label>
-                    <select id="frequency-select">
+                    <select id="frequency-select" disabled>
                         <option value="0" selected>Paused</option>
                         <option value="30000">Every 30s</option>
                         <option value="60000">Every 1 min</option>
@@ -38,7 +40,7 @@
                         <option value="300000">Every 5 min</option>
                         <option value="600000">Every 10 min</option>
                     </select>
-                    <button id="btn-enable-audio" class="btn btn-enable-audio">&#128266; Enable Audio</button>
+                    <button id="btn-enable-audio" class="btn btn-enable-audio" disabled>&#128266; Enable Audio</button>
                 </div>
 
                 <!-- Countdown Display -->

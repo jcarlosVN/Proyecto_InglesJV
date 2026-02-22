@@ -31,14 +31,23 @@ class App {
         this.frequencySelect = document.getElementById('frequency-select');
         this.enableAudioBtn = document.getElementById('btn-enable-audio');
         this.countdownEl = document.getElementById('countdown-display');
+        this.cameraBtnEl = document.getElementById('btn-enable-camera');
+        this.flipCameraBtn = document.getElementById('btn-flip-camera');
+        this._facingMode = 'user'; // 'user' = front, 'environment' = back
 
         this._bindEvents();
-        this._initPassiveMode();
+        // Do NOT auto-init — user must tap "Enable Camera & Mic" first
     }
 
     _bindEvents() {
         this.stopBtn.addEventListener('click', () => this.stopSession());
         this.startConversationBtn.addEventListener('click', () => this.startSession(this.currentTopic));
+
+        // Enable Camera & Mic button — entry point for the whole app
+        this.cameraBtnEl.addEventListener('click', () => this._initPassiveMode());
+
+        // Flip camera (front ↔ back) — only active in passive mode
+        this.flipCameraBtn.addEventListener('click', () => this._flipCamera());
 
         // Unlock audio on explicit button tap (required for iOS Safari)
         this.enableAudioBtn.addEventListener('click', () => {
@@ -57,12 +66,15 @@ class App {
     }
 
     async _initPassiveMode() {
+        this.cameraBtnEl.disabled = true;
+        this._setStatus('connecting', 'Requesting camera...');
         try {
-            this._setStatus('connecting', 'Requesting camera...');
-            const stream = await this.mediaManager.requestCameraAndMic();
+            await this.mediaManager.requestCameraAndMic(this._facingMode);
             this.mediaManager.attachToVideo(this.videoEl);
             this.cameraPlaceholder.classList.add('hidden');
             await this.videoEl.play();
+            // Front camera = mirrored; set initial transform
+            this.videoEl.style.transform = 'scaleX(-1)';
 
             this.passiveMode = new PassiveMode({
                 videoElement: this.videoEl,
@@ -71,12 +83,54 @@ class App {
                 onError: (msg) => this._setStatus('error', `Passive: ${msg}`),
             });
 
-            // Do NOT auto-start — wait for user to select a frequency
+            // Unlock controls now that camera + mic are ready
+            this.frequencySelect.disabled = false;
+            this.enableAudioBtn.disabled = false;
+            this.cameraBtnEl.classList.add('hidden');
+            this.flipCameraBtn.classList.remove('hidden');
+
             this.mode = 'passive';
             this._setStatus('idle', 'Select a frequency to begin');
         } catch (error) {
             console.error('Failed to init passive mode:', error);
             this._setStatus('error', `Camera error: ${error.message}`);
+            this.cameraBtnEl.disabled = false; // let user retry
+        }
+    }
+
+    async _flipCamera() {
+        if (this.mode !== 'passive' || !this.mediaManager.stream) return;
+
+        const wasActive = this.passiveMode?.isActive;
+        if (this.passiveMode) this.passiveMode.stop();
+
+        this._facingMode = this._facingMode === 'user' ? 'environment' : 'user';
+        this._setStatus('connecting', 'Switching camera...');
+
+        try {
+            await this.mediaManager.requestCameraAndMic(this._facingMode);
+            this.mediaManager.attachToVideo(this.videoEl);
+            await this.videoEl.play();
+            // Mirror front camera only
+            this.videoEl.style.transform = this._facingMode === 'user' ? 'scaleX(-1)' : 'scaleX(1)';
+
+            if (wasActive) {
+                const ms = parseInt(this.frequencySelect.value);
+                if (ms > 0) {
+                    this.passiveMode.setInterval(ms);
+                    this.passiveMode.start();
+                    this._setStatus('passive', 'Passive mode - analyzing in a moment...');
+                } else {
+                    this._setStatus('idle', 'Select a frequency to begin');
+                }
+            } else {
+                this._setStatus('idle', 'Select a frequency to begin');
+            }
+        } catch (error) {
+            // Revert facing mode if switch failed
+            this._facingMode = this._facingMode === 'user' ? 'environment' : 'user';
+            this.videoEl.style.transform = this._facingMode === 'user' ? 'scaleX(-1)' : 'scaleX(1)';
+            this._setStatus('error', 'Could not switch camera');
         }
     }
 
@@ -120,11 +174,12 @@ class App {
             this.topicCard.classList.add('hidden');
 
             this._setStatus('connecting', 'Connecting to tutor...');
+            this.flipCameraBtn.classList.add('hidden'); // no flipping during active session
 
             // Camera should already be running from passive mode
             // If not, request it
             if (!this.mediaManager.stream) {
-                const stream = await this.mediaManager.requestCameraAndMic();
+                await this.mediaManager.requestCameraAndMic(this._facingMode);
                 this.mediaManager.attachToVideo(this.videoEl);
                 this.cameraPlaceholder.classList.add('hidden');
                 await this.videoEl.play();
@@ -241,6 +296,7 @@ class App {
         // Toggle buttons
         this.stopBtn.classList.add('hidden');
         this.passiveControls.classList.remove('hidden');
+        this.flipCameraBtn.classList.remove('hidden'); // restore flip on return to passive
 
         // Return to passive mode (camera stays on)
         this.mode = 'passive';
