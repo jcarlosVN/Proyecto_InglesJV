@@ -1,7 +1,7 @@
 /**
  * Passive Mode controller.
  * Periodically captures a photo and requests an English topic suggestion.
- * Speaks the topic using browser SpeechSynthesis and displays a topic card.
+ * Speaks the topic using Gemini TTS audio (fallback: browser SpeechSynthesis).
  */
 import { VideoCapture } from './video-capture.js';
 
@@ -18,6 +18,7 @@ export class PassiveMode {
         this.isActive = false;
         this._requesting = false;
         this._currentAudioCtx = null;
+        this._countdownId = null;
     }
 
     start() {
@@ -36,6 +37,7 @@ export class PassiveMode {
 
     stop() {
         this.isActive = false;
+        this._stopCountdown();
         if (this.timerId) {
             clearTimeout(this.timerId);
             this.timerId = null;
@@ -61,7 +63,9 @@ export class PassiveMode {
         // If running, restart timer with new interval
         if (this.isActive && this.timerId && !this._requesting) {
             clearTimeout(this.timerId);
+            this._stopCountdown();
             this.timerId = setTimeout(() => this._tick(), this.intervalMs);
+            this._startCountdown(this.intervalMs);
         } else if (!this.isActive) {
             this.start();
         }
@@ -75,11 +79,36 @@ export class PassiveMode {
     _scheduleNext() {
         if (!this.isActive || this.intervalMs === 0) return;
         this.timerId = setTimeout(() => this._tick(), this.intervalMs);
+        this._startCountdown(this.intervalMs);
+    }
+
+    _startCountdown(totalMs) {
+        this._stopCountdown();
+        this._countdownTarget = Date.now() + totalMs;
+        const update = () => {
+            const remaining = Math.max(0, this._countdownTarget - Date.now());
+            const sec = Math.ceil(remaining / 1000);
+            if (sec <= 0) {
+                this.onStatus?.('Analyzing what you see...');
+                return;
+            }
+            this.onStatus?.(`Next suggestion in ${sec}s`);
+            this._countdownId = setTimeout(update, 1000);
+        };
+        update();
+    }
+
+    _stopCountdown() {
+        if (this._countdownId) {
+            clearTimeout(this._countdownId);
+            this._countdownId = null;
+        }
     }
 
     async _captureAndSuggest() {
         if (this._requesting) return;
         this._requesting = true;
+        this._stopCountdown();
         this.onStatus?.('Analyzing what you see...');
 
         try {
