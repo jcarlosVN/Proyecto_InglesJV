@@ -29,6 +29,8 @@ class App {
         this.startConversationBtn = document.getElementById('btn-start-conversation');
         this.passiveControls = document.getElementById('passive-controls');
         this.frequencySelect = document.getElementById('frequency-select');
+        this.enableAudioBtn = document.getElementById('btn-enable-audio');
+        this.countdownEl = document.getElementById('countdown-display');
 
         this._bindEvents();
         this._initPassiveMode();
@@ -37,9 +39,20 @@ class App {
     _bindEvents() {
         this.stopBtn.addEventListener('click', () => this.stopSession());
         this.startConversationBtn.addEventListener('click', () => this.startSession(this.currentTopic));
+
+        // Unlock audio on explicit button tap (required for iOS Safari)
+        this.enableAudioBtn.addEventListener('click', () => {
+            if (this.passiveMode) this.passiveMode.unlockAudio();
+            this.enableAudioBtn.classList.add('hidden');
+        });
+
         this.frequencySelect.addEventListener('change', () => {
             const ms = parseInt(this.frequencySelect.value);
-            if (this.passiveMode) this.passiveMode.setInterval(ms);
+            if (this.passiveMode) {
+                // User gesture — also try to unlock audio (helps on some iOS versions)
+                this.passiveMode.unlockAudio();
+                this.passiveMode.setInterval(ms);
+            }
         });
     }
 
@@ -54,22 +67,38 @@ class App {
             this.passiveMode = new PassiveMode({
                 videoElement: this.videoEl,
                 onTopic: (text) => this._onTopicSuggested(text),
-                onStatus: (msg) => this._setStatus('passive', msg),
+                onStatus: (msg) => this._onPassiveStatus(msg),
                 onError: (msg) => this._setStatus('error', `Passive: ${msg}`),
             });
 
-            const ms = parseInt(this.frequencySelect.value);
-            this.passiveMode.setInterval(ms);
+            // Do NOT auto-start — wait for user to select a frequency
             this.mode = 'passive';
-            if (ms > 0) {
-                this.passiveMode.start();
-                this._setStatus('passive', 'Passive mode - analyzing in a moment...');
-            } else {
-                this._setStatus('passive', 'Passive mode - paused');
-            }
+            this._setStatus('idle', 'Select a frequency to begin');
         } catch (error) {
             console.error('Failed to init passive mode:', error);
             this._setStatus('error', `Camera error: ${error.message}`);
+        }
+    }
+
+    _onPassiveStatus(msg) {
+        this._setStatus('passive', msg);
+
+        // Update the dedicated countdown display
+        const match = msg.match(/Next suggestion in (\d+)s/);
+        if (match) {
+            const sec = parseInt(match[1]);
+            const min = Math.floor(sec / 60);
+            const rem = sec % 60;
+            const formatted = min > 0
+                ? (rem > 0 ? `${min}m ${rem}s` : `${min}m`)
+                : `${sec}s`;
+            this.countdownEl.textContent = `Next topic in ${formatted}`;
+            this.countdownEl.classList.remove('hidden');
+        } else if (msg === 'Analyzing what you see...') {
+            this.countdownEl.textContent = 'Analyzing...';
+            this.countdownEl.classList.remove('hidden');
+        } else {
+            this.countdownEl.classList.add('hidden');
         }
     }
 

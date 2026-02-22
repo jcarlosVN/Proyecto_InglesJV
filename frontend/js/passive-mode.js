@@ -17,7 +17,8 @@ export class PassiveMode {
         this.intervalMs = 60000; // default 1 min
         this.isActive = false;
         this._requesting = false;
-        this._currentAudioCtx = null;
+        this._sharedAudioCtx = null;  // persistent AudioContext (kept alive for iOS)
+        this._currentSource = null;   // active BufferSourceNode
         this._countdownId = null;
     }
 
@@ -46,11 +47,32 @@ export class PassiveMode {
             this.videoCapture.stop();
             this.videoCapture = null;
         }
-        if (this._currentAudioCtx) {
-            this._currentAudioCtx.close();
-            this._currentAudioCtx = null;
+        // Stop active audio source but keep the shared AudioContext alive
+        if (this._currentSource) {
+            try { this._currentSource.stop(); } catch (e) {}
+            this._currentSource = null;
         }
         speechSynthesis.cancel();
+    }
+
+    /**
+     * Must be called from a user-gesture handler (tap/click).
+     * Creates and unlocks the AudioContext for iOS Safari.
+     */
+    unlockAudio() {
+        if (!this._sharedAudioCtx || this._sharedAudioCtx.state === 'closed') {
+            this._sharedAudioCtx = new AudioContext({ sampleRate: 24000 });
+        }
+        const ctx = this._sharedAudioCtx;
+        if (ctx.state === 'suspended') {
+            ctx.resume();
+        }
+        // Play a 1-sample silent buffer — required to fully unlock iOS audio
+        const buf = ctx.createBuffer(1, 1, 24000);
+        const src = ctx.createBufferSource();
+        src.buffer = buf;
+        src.connect(ctx.destination);
+        src.start(0);
     }
 
     setInterval(ms) {
@@ -138,7 +160,7 @@ export class PassiveMode {
             if (data.text) {
                 this.onTopic?.(data.text);
                 if (data.audio) {
-                    this._playAudio(data.audio);
+                    this._playAudio(data.audio, data.text);
                 } else {
                     this._speakFallback(data.text);
                 }
@@ -154,41 +176,55 @@ export class PassiveMode {
         }
     }
 
-    _playAudio(base64PcmData) {
-        // Stop any currently playing audio
-        if (this._currentAudioCtx) {
-            this._currentAudioCtx.close();
-            this._currentAudioCtx = null;
+    _playAudio(base64PcmData, fallbackText = '') {
+        // Stop currently playing audio
+        if (this._currentSource) {
+            try { this._currentSource.stop(); } catch (e) {}
+            this._currentSource = null;
         }
         speechSynthesis.cancel();
 
+        // Lazy-create the shared AudioContext (reused across plays)
+        if (!this._sharedAudioCtx || this._sharedAudioCtx.state === 'closed') {
+            this._sharedAudioCtx = new AudioContext({ sampleRate: 24000 });
+        }
+        const ctx = this._sharedAudioCtx;
+
+        // Decode raw PCM (int16 little-endian → float32)
         const binaryString = atob(base64PcmData);
         const bytes = new Uint8Array(binaryString.length);
         for (let i = 0; i < binaryString.length; i++) {
             bytes[i] = binaryString.charCodeAt(i);
         }
-
         const int16Array = new Int16Array(bytes.buffer);
         const float32Array = new Float32Array(int16Array.length);
         for (let i = 0; i < int16Array.length; i++) {
             float32Array[i] = int16Array[i] / 32768.0;
         }
 
-        const ctx = new AudioContext({ sampleRate: 24000 });
-        this._currentAudioCtx = ctx;
         const audioBuffer = ctx.createBuffer(1, float32Array.length, 24000);
         audioBuffer.getChannelData(0).set(float32Array);
 
-        const source = ctx.createBufferSource();
-        source.buffer = audioBuffer;
-        source.connect(ctx.destination);
-        source.start(0);
-        source.onended = () => {
-            ctx.close();
-            if (this._currentAudioCtx === ctx) {
-                this._currentAudioCtx = null;
-            }
+        const doPlay = () => {
+            const source = ctx.createBufferSource();
+            source.buffer = audioBuffer;
+            source.connect(ctx.destination);
+            source.start(0);
+            this._currentSource = source;
+            source.onended = () => {
+                if (this._currentSource === source) this._currentSource = null;
+            };
         };
+
+        // On iOS Safari the context starts suspended until a user gesture unlocks it.
+        // If still suspended here, try to resume; if that fails, fall back to TTS.
+        if (ctx.state === 'suspended') {
+            ctx.resume().then(doPlay).catch(() => {
+                if (fallbackText) this._speakFallback(fallbackText);
+            });
+        } else {
+            doPlay();
+        }
     }
 
     _speakFallback(text) {
