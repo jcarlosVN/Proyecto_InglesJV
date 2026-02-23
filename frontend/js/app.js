@@ -119,6 +119,7 @@ class App {
 
         if (this.passiveMode) {
             this.passiveMode.stop();
+            this.passiveMode.destroyAudio();
             this.passiveMode = null;
         }
         this.mediaManager.stop();

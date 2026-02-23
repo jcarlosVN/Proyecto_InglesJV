@@ -19,6 +19,8 @@ export class PassiveMode {
         this._requesting = false;
         this._sharedAudioCtx = null;  // persistent AudioContext (kept alive for iOS)
         this._currentSource = null;   // active BufferSourceNode
+        this._keepAliveNode = null;   // silent oscillator that prevents mobile suspend
+        this._keepAliveGain = null;
         this._countdownId = null;
         this._countdownTarget = 0;
     }
@@ -57,7 +59,9 @@ export class PassiveMode {
 
     /**
      * Must be called from a user-gesture handler (tap/click).
-     * Creates and unlocks the AudioContext for iOS Safari.
+     * Creates and unlocks the AudioContext for iOS Safari, then starts
+     * a silent keep-alive oscillator so mobile browsers don't re-suspend
+     * the context during long timer intervals (30 s – 10 min).
      */
     unlockAudio() {
         if (!this._sharedAudioCtx || this._sharedAudioCtx.state === 'closed') {
@@ -73,6 +77,37 @@ export class PassiveMode {
         src.buffer = buf;
         src.connect(ctx.destination);
         src.start(0);
+
+        // Start a silent oscillator that keeps the AudioContext alive.
+        // Without this, iOS Safari & Chrome Android re-suspend the context
+        // after a few seconds of silence, making timer-triggered audio fail.
+        if (!this._keepAliveNode) {
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            gain.gain.value = 0;       // truly silent
+            osc.frequency.value = 1;   // 1 Hz — inaudible regardless
+            osc.connect(gain);
+            gain.connect(ctx.destination);
+            osc.start();
+            this._keepAliveNode = osc;
+            this._keepAliveGain = gain;
+        }
+    }
+
+    /** Stop the silent keep-alive (called only when PassiveMode is fully destroyed). */
+    destroyAudio() {
+        if (this._keepAliveNode) {
+            try { this._keepAliveNode.stop(); } catch (_) {}
+            this._keepAliveNode = null;
+        }
+        if (this._keepAliveGain) {
+            try { this._keepAliveGain.disconnect(); } catch (_) {}
+            this._keepAliveGain = null;
+        }
+        if (this._sharedAudioCtx && this._sharedAudioCtx.state !== 'closed') {
+            this._sharedAudioCtx.close();
+            this._sharedAudioCtx = null;
+        }
     }
 
     setInterval(ms) {
