@@ -61,7 +61,7 @@ export class PassiveMode {
      * Must be called from a user-gesture handler (tap/click).
      * Creates and unlocks the AudioContext for iOS Safari, then starts
      * a silent keep-alive oscillator so mobile browsers don't re-suspend
-     * the context during long timer intervals (30 s – 10 min).
+     * the context during long timer intervals (30 s – 10 min - or more).
      */
     unlockAudio() {
         if (!this._sharedAudioCtx || this._sharedAudioCtx.state === 'closed') {
