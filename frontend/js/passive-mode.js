@@ -93,6 +93,25 @@ export class PassiveMode {
         }
     }
 
+    /** Returns milliseconds remaining until the next tick. */
+    getRemainingMs() {
+        if (!this.isActive || !this._countdownTarget) return 0;
+        return Math.max(0, this._countdownTarget - Date.now());
+    }
+
+    /**
+     * Resume the timer with a specific remaining delay (e.g. after camera swap).
+     * Unlike setInterval(), this does NOT reset the countdown to the full interval.
+     */
+    resumeWithRemaining(remainingMs) {
+        if (this.intervalMs === 0) return;
+        this.isActive = true;
+        this.videoCapture = new VideoCapture(this.videoElement);
+        const delay = Math.max(1000, remainingMs); // at least 1 s
+        this.timerId = setTimeout(() => this._tick(), delay);
+        this._startCountdown(delay);
+    }
+
     _tick() {
         if (!this.isActive) return;
         this._captureAndSuggest();
@@ -133,13 +152,12 @@ export class PassiveMode {
         this._stopCountdown();
         this.onStatus?.('Analyzing what you see...');
 
+        let errorOccurred = false;
         try {
             // Capture single frame
             const base64Frame = await this._captureFrame();
             if (!base64Frame) {
                 this.onStatus?.('Passive mode - waiting for camera...');
-                this._requesting = false;
-                this._scheduleNext();
                 return;
             }
 
@@ -151,7 +169,12 @@ export class PassiveMode {
             });
 
             if (!response.ok) {
-                throw new Error(`Server error: ${response.status}`);
+                let errorDetail = `Server error (${response.status})`;
+                try {
+                    const errData = await response.json();
+                    if (errData.detail) errorDetail = errData.detail;
+                } catch (_) {}
+                throw new Error(errorDetail);
             }
 
             const data = await response.json();
@@ -170,9 +193,15 @@ export class PassiveMode {
         } catch (err) {
             console.error('Passive mode error:', err);
             this.onError?.(err.message);
+            errorOccurred = true;
         } finally {
             this._requesting = false;
-            this._scheduleNext();
+            if (errorOccurred) {
+                // Delay before rescheduling so user can read the error
+                setTimeout(() => this._scheduleNext(), 6000);
+            } else {
+                this._scheduleNext();
+            }
         }
     }
 

@@ -86,7 +86,14 @@ class App {
                 videoElement: this.videoEl,
                 onTopic: (text) => this._onTopicSuggested(text),
                 onStatus: (msg) => this._onPassiveStatus(msg),
-                onError: (msg) => this._setStatus('error', `Error: ${msg}`),
+                onError: (msg) => {
+                    this._setStatus('error', `Error: ${msg}`);
+                    // Show error prominently in countdown area so user notices
+                    this.countdownLabelEl.textContent = 'Error';
+                    this.countdownTimerEl.textContent = msg.length > 80
+                        ? msg.substring(0, 80) + '...' : msg;
+                    this.countdownEl.classList.remove('hidden');
+                },
             });
 
             // 4. Unlock AudioContext while still in user-gesture context (iOS Safari)
@@ -139,7 +146,9 @@ class App {
     async _flipCamera() {
         if (this.mode !== 'passive' || !this.mediaManager.stream) return;
 
+        // Save timer state before stopping — timer does not depend on camera
         const wasActive = this.passiveMode?.isActive;
+        const remainingMs = this.passiveMode?.getRemainingMs() ?? 0;
         if (this.passiveMode) this.passiveMode.stop();
 
         this._facingMode = this._facingMode === 'user' ? 'environment' : 'user';
@@ -152,12 +161,19 @@ class App {
             this.videoEl.style.transform = this._facingMode === 'user' ? 'scaleX(-1)' : 'scaleX(1)';
 
             if (wasActive) {
-                const ms = parseInt(this.frequencySelect.value);
-                if (ms > 0) {
-                    this.passiveMode.setInterval(ms);
+                // Resume with the remaining time instead of restarting the full interval
+                if (remainingMs > 0) {
+                    this.passiveMode.resumeWithRemaining(remainingMs);
                     this._setStatus('passive', 'Watching...');
                 } else {
-                    this._setStatus('idle', 'Ready — choose a topic interval');
+                    // Timer had already expired — start a fresh cycle
+                    const ms = parseInt(this.frequencySelect.value);
+                    if (ms > 0) {
+                        this.passiveMode.setInterval(ms);
+                        this._setStatus('passive', 'Watching...');
+                    } else {
+                        this._setStatus('idle', 'Ready — choose a topic interval');
+                    }
                 }
             } else {
                 this._setStatus('idle', 'Ready — choose a topic interval');
