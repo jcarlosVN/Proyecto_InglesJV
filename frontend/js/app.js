@@ -16,6 +16,7 @@ class App {
         this.isSessionActive = false;
         this.currentTopic = '';
         this.mode = 'idle'; // idle | passive | active
+        this._facingMode = 'user'; // 'user' = front, 'environment' = back
 
         // DOM elements
         this.videoEl = document.getElementById('camera-preview');
@@ -29,74 +30,111 @@ class App {
         this.startConversationBtn = document.getElementById('btn-start-conversation');
         this.passiveControls = document.getElementById('passive-controls');
         this.frequencySelect = document.getElementById('frequency-select');
-        this.enableAudioBtn = document.getElementById('btn-enable-audio');
         this.countdownEl = document.getElementById('countdown-display');
-        this.cameraBtnEl = document.getElementById('btn-enable-camera');
+        this.countdownLabelEl = document.getElementById('countdown-label');
+        this.countdownTimerEl = document.getElementById('countdown-timer');
+        this.activateBtn = document.getElementById('btn-activate');
+        this.deactivateBtn = document.getElementById('btn-deactivate');
         this.flipCameraBtn = document.getElementById('btn-flip-camera');
-        this._facingMode = 'user'; // 'user' = front, 'environment' = back
 
         this._bindEvents();
-        // Do NOT auto-init — user must tap "Enable Camera & Mic" first
+        // User must tap Activate — nothing runs automatically
     }
 
     _bindEvents() {
         this.stopBtn.addEventListener('click', () => this.stopSession());
         this.startConversationBtn.addEventListener('click', () => this.startSession(this.currentTopic));
-
-        // Enable Camera & Mic button — entry point for the whole app
-        this.cameraBtnEl.addEventListener('click', () => this._initPassiveMode());
-
-        // Flip camera (front ↔ back) — only active in passive mode
+        this.activateBtn.addEventListener('click', () => this._activate());
+        this.deactivateBtn.addEventListener('click', () => this._deactivate());
         this.flipCameraBtn.addEventListener('click', () => this._flipCamera());
-
-        // Unlock audio on explicit button tap (required for iOS Safari)
-        this.enableAudioBtn.addEventListener('click', () => {
-            if (this.passiveMode) this.passiveMode.unlockAudio();
-            this.enableAudioBtn.classList.add('hidden');
-        });
 
         this.frequencySelect.addEventListener('change', () => {
             const ms = parseInt(this.frequencySelect.value);
             if (this.passiveMode) {
-                // User gesture — also try to unlock audio (helps on some iOS versions)
+                // Change event is a user gesture — unlock audio as a side effect (iOS)
                 this.passiveMode.unlockAudio();
                 this.passiveMode.setInterval(ms);
             }
         });
     }
 
-    async _initPassiveMode() {
-        this.cameraBtnEl.disabled = true;
-        this._setStatus('connecting', 'Requesting camera...');
+    // ─── Activation / Deactivation ────────────────────────────────────────────
+
+    async _activate() {
+        this.activateBtn.disabled = true;
+        this._setStatus('connecting', 'Requesting permissions...');
         try {
+            // 1. Camera
             await this.mediaManager.requestCameraAndMic(this._facingMode);
             this.mediaManager.attachToVideo(this.videoEl);
             this.cameraPlaceholder.classList.add('hidden');
             await this.videoEl.play();
-            // Front camera = mirrored; set initial transform
-            this.videoEl.style.transform = 'scaleX(-1)';
+            this.videoEl.style.transform = 'scaleX(-1)'; // mirror front camera
 
+            // 2. Microphone permission — requested here for transparency so the
+            //    browser shows one permission prompt. AudioRecorder manages its
+            //    own stream for active sessions; we just get permission now.
+            try {
+                const micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                micStream.getTracks().forEach(t => t.stop());
+            } catch (_) {
+                // Mic denied — active sessions will fail but passive mode still works
+            }
+
+            // 3. Passive mode controller
             this.passiveMode = new PassiveMode({
                 videoElement: this.videoEl,
                 onTopic: (text) => this._onTopicSuggested(text),
                 onStatus: (msg) => this._onPassiveStatus(msg),
-                onError: (msg) => this._setStatus('error', `Passive: ${msg}`),
+                onError: (msg) => this._setStatus('error', `Error: ${msg}`),
             });
 
-            // Unlock controls now that camera + mic are ready
+            // 4. Unlock AudioContext while still in user-gesture context (iOS Safari)
+            this.passiveMode.unlockAudio();
+
+            // 5. UI: enable controls
             this.frequencySelect.disabled = false;
-            this.enableAudioBtn.disabled = false;
-            this.cameraBtnEl.classList.add('hidden');
+            this.activateBtn.classList.add('hidden');
+            this.deactivateBtn.classList.remove('hidden');
             this.flipCameraBtn.classList.remove('hidden');
 
             this.mode = 'passive';
-            this._setStatus('idle', 'Select a frequency to begin');
+            this._setStatus('idle', 'Ready — choose a topic interval');
         } catch (error) {
-            console.error('Failed to init passive mode:', error);
-            this._setStatus('error', `Camera error: ${error.message}`);
-            this.cameraBtnEl.disabled = false; // let user retry
+            console.error('Activation failed:', error);
+            this._setStatus('error', `Could not activate: ${error.message}`);
+            this.activateBtn.disabled = false;
         }
     }
+
+    _deactivate() {
+        if (this.mode !== 'passive') return;
+
+        if (this.passiveMode) {
+            this.passiveMode.stop();
+            this.passiveMode = null;
+        }
+        this.mediaManager.stop();
+        this.videoEl.srcObject = null;
+        this.videoEl.style.transform = '';
+
+        // Reset UI
+        this.cameraPlaceholder.classList.remove('hidden');
+        this.flipCameraBtn.classList.add('hidden');
+        this.deactivateBtn.classList.add('hidden');
+        this.activateBtn.classList.remove('hidden');
+        this.activateBtn.disabled = false;
+        this.frequencySelect.disabled = true;
+        this.frequencySelect.value = '0';
+        this.countdownEl.classList.add('hidden');
+        this.topicCard.classList.add('hidden');
+
+        this.mode = 'idle';
+        this.currentTopic = '';
+        this._setStatus('idle', 'Ready to start');
+    }
+
+    // ─── Camera flip ──────────────────────────────────────────────────────────
 
     async _flipCamera() {
         if (this.mode !== 'passive' || !this.mediaManager.stream) return;
@@ -111,48 +149,55 @@ class App {
             await this.mediaManager.requestCameraAndMic(this._facingMode);
             this.mediaManager.attachToVideo(this.videoEl);
             await this.videoEl.play();
-            // Mirror front camera only
             this.videoEl.style.transform = this._facingMode === 'user' ? 'scaleX(-1)' : 'scaleX(1)';
 
             if (wasActive) {
                 const ms = parseInt(this.frequencySelect.value);
                 if (ms > 0) {
                     this.passiveMode.setInterval(ms);
-                    this.passiveMode.start();
-                    this._setStatus('passive', 'Passive mode - analyzing in a moment...');
+                    this._setStatus('passive', 'Watching...');
                 } else {
-                    this._setStatus('idle', 'Select a frequency to begin');
+                    this._setStatus('idle', 'Ready — choose a topic interval');
                 }
             } else {
-                this._setStatus('idle', 'Select a frequency to begin');
+                this._setStatus('idle', 'Ready — choose a topic interval');
             }
         } catch (error) {
-            // Revert facing mode if switch failed
             this._facingMode = this._facingMode === 'user' ? 'environment' : 'user';
             this.videoEl.style.transform = this._facingMode === 'user' ? 'scaleX(-1)' : 'scaleX(1)';
             this._setStatus('error', 'Could not switch camera');
         }
     }
 
-    _onPassiveStatus(msg) {
-        this._setStatus('passive', msg);
+    // ─── Passive mode callbacks ────────────────────────────────────────────────
 
-        // Update the dedicated countdown display
+    _onPassiveStatus(msg) {
+        // Parse countdown messages — only the countdown display shows the timer;
+        // the status bar shows a simple word so the two never duplicate.
         const match = msg.match(/Next suggestion in (\d+)s/);
         if (match) {
             const sec = parseInt(match[1]);
             const min = Math.floor(sec / 60);
             const rem = sec % 60;
-            const formatted = min > 0
-                ? (rem > 0 ? `${min}m ${rem}s` : `${min}m`)
-                : `${sec}s`;
-            this.countdownEl.textContent = `Next topic in ${formatted}`;
+            // Clock-style format: "2:00", "0:45"
+            const clock = `${min}:${String(rem).padStart(2, '0')}`;
+            this.countdownLabelEl.textContent = 'Next topic in';
+            this.countdownTimerEl.textContent = clock;
             this.countdownEl.classList.remove('hidden');
+            this._setStatus('passive', 'Watching...');
         } else if (msg === 'Analyzing what you see...') {
-            this.countdownEl.textContent = 'Analyzing...';
+            this.countdownLabelEl.textContent = '';
+            this.countdownTimerEl.textContent = 'Analyzing...';
             this.countdownEl.classList.remove('hidden');
-        } else {
+            this._setStatus('passive', 'Analyzing...');
+        } else if (msg.includes('topic suggested')) {
             this.countdownEl.classList.add('hidden');
+            this._setStatus('passive', 'Topic ready');
+        } else if (msg.includes('paused')) {
+            this.countdownEl.classList.add('hidden');
+            this._setStatus('idle', 'Paused');
+        } else {
+            this._setStatus('passive', msg);
         }
     }
 
@@ -162,22 +207,20 @@ class App {
         this.topicCard.classList.remove('hidden');
     }
 
+    // ─── Active session ────────────────────────────────────────────────────────
+
     async startSession(topic = '') {
         try {
-            // Stop passive mode
-            if (this.passiveMode) {
-                this.passiveMode.stop();
-            }
+            if (this.passiveMode) this.passiveMode.stop();
             speechSynthesis.cancel();
             this.mode = 'active';
             this.passiveControls.classList.add('hidden');
             this.topicCard.classList.add('hidden');
+            this.countdownEl.classList.add('hidden');
+            this.flipCameraBtn.classList.add('hidden');
 
             this._setStatus('connecting', 'Connecting to tutor...');
-            this.flipCameraBtn.classList.add('hidden'); // no flipping during active session
 
-            // Camera should already be running from passive mode
-            // If not, request it
             if (!this.mediaManager.stream) {
                 await this.mediaManager.requestCameraAndMic(this._facingMode);
                 this.mediaManager.attachToVideo(this.videoEl);
@@ -185,14 +228,11 @@ class App {
                 await this.videoEl.play();
             }
 
-            // Clear transcript placeholder
             const empty = this.transcriptEl.querySelector('.transcript-empty');
             if (empty) empty.remove();
 
-            // Setup video capture (1 FPS)
             this.videoCapture = new VideoCapture(this.videoEl);
 
-            // Connect WebSocket (wss:// on HTTPS, ws:// on HTTP)
             const wsProto = window.location.protocol === 'https:' ? 'wss' : 'ws';
             const wsUrl = `${wsProto}://${window.location.host}/ws/speak`;
             this.wsClient = new WebSocketClient(wsUrl);
@@ -201,7 +241,6 @@ class App {
             this._setStatus('connecting', 'Connecting to server...');
             await this.wsClient.connect();
 
-            // Send start session message with optional topic
             const config = {};
             if (topic) config.topic = topic;
             this.wsClient.sendStartSession(config);
@@ -224,21 +263,10 @@ class App {
             }
         });
 
-        this.wsClient.on('audio', (msg) => {
-            this.audioPlayer.playChunk(msg.data);
-        });
-
-        this.wsClient.on('transcript', (msg) => {
-            this._addTranscript(msg.role, msg.content);
-        });
-
-        this.wsClient.on('correction', (msg) => {
-            this._addCorrection(msg.original, msg.corrected, msg.rule);
-        });
-
-        this.wsClient.on('vocabulary', (msg) => {
-            this._addVocabulary(msg.word, msg.definition, msg.example);
-        });
+        this.wsClient.on('audio', (msg) => { this.audioPlayer.playChunk(msg.data); });
+        this.wsClient.on('transcript', (msg) => { this._addTranscript(msg.role, msg.content); });
+        this.wsClient.on('correction', (msg) => { this._addCorrection(msg.original, msg.corrected, msg.rule); });
+        this.wsClient.on('vocabulary', (msg) => { this._addVocabulary(msg.word, msg.definition, msg.example); });
 
         this.wsClient.on('disconnected', () => {
             if (this.isSessionActive) {
@@ -246,59 +274,36 @@ class App {
                 this.stopSession();
             }
         });
-
-        this.wsClient.on('error', () => {
-            this._setStatus('error', 'Connection error');
-        });
+        this.wsClient.on('error', () => { this._setStatus('error', 'Connection error'); });
     }
 
     _onSessionReady() {
         this.isSessionActive = true;
-        this._setStatus('active', 'Session active - speak freely!');
-
-        // Show stop button
+        this._setStatus('active', 'Session active — speak freely!');
         this.stopBtn.classList.remove('hidden');
 
-        // Start sending audio
-        this.audioRecorder.start((base64Audio) => {
-            this.wsClient.sendAudio(base64Audio);
-        });
-
-        // Start sending video frames
-        this.videoCapture.start((base64Frame) => {
-            this.wsClient.sendVideo(base64Frame);
-        });
-
-        // Init audio player
+        this.audioRecorder.start((base64Audio) => { this.wsClient.sendAudio(base64Audio); });
+        this.videoCapture.start((base64Frame) => { this.wsClient.sendVideo(base64Frame); });
         this.audioPlayer.init();
     }
 
     stopSession() {
         this.isSessionActive = false;
 
-        // Stop media streams for active mode
-        if (this.videoCapture) {
-            this.videoCapture.stop();
-            this.videoCapture = null;
-        }
+        if (this.videoCapture) { this.videoCapture.stop(); this.videoCapture = null; }
         this.audioRecorder.stop();
         this.audioPlayer.stop();
 
-        // Stop WebSocket
         if (this.wsClient) {
-            if (this.wsClient.isConnected) {
-                this.wsClient.sendEndSession();
-            }
+            if (this.wsClient.isConnected) this.wsClient.sendEndSession();
             this.wsClient.disconnect();
             this.wsClient = null;
         }
 
-        // Toggle buttons
         this.stopBtn.classList.add('hidden');
         this.passiveControls.classList.remove('hidden');
-        this.flipCameraBtn.classList.remove('hidden'); // restore flip on return to passive
+        this.flipCameraBtn.classList.remove('hidden');
 
-        // Return to passive mode (camera stays on)
         this.mode = 'passive';
         this.currentTopic = '';
         this.topicCard.classList.add('hidden');
@@ -306,12 +311,13 @@ class App {
         const ms = parseInt(this.frequencySelect.value);
         if (this.passiveMode && ms > 0) {
             this.passiveMode.setInterval(ms);
-            this.passiveMode.start();
-            this._setStatus('passive', 'Passive mode - waiting for next analysis...');
+            this._setStatus('passive', 'Watching...');
         } else {
-            this._setStatus('passive', 'Passive mode - paused');
+            this._setStatus('idle', 'Ready — choose a topic interval');
         }
     }
+
+    // ─── Helpers ───────────────────────────────────────────────────────────────
 
     _setStatus(state, message) {
         this.statusEl.textContent = message;
@@ -321,15 +327,12 @@ class App {
     _addTranscript(role, content) {
         const entry = document.createElement('div');
         entry.className = `transcript-entry ${role}`;
-
         const label = document.createElement('span');
         label.className = 'transcript-label';
         label.textContent = role === 'ai' ? 'Tutor' : 'You';
-
         const text = document.createElement('span');
         text.className = 'transcript-text';
         text.textContent = content;
-
         entry.appendChild(label);
         entry.appendChild(text);
         this.transcriptEl.appendChild(entry);
@@ -368,7 +371,4 @@ class App {
     }
 }
 
-// Initialize when DOM is ready
-document.addEventListener('DOMContentLoaded', () => {
-    new App();
-});
+document.addEventListener('DOMContentLoaded', () => { new App(); });

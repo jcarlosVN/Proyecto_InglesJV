@@ -30,10 +30,9 @@ export class PassiveMode {
         }
         this.isActive = true;
         this.videoCapture = new VideoCapture(this.videoElement);
-
-        // Take first photo after a short delay to let camera warm up
-        this.timerId = setTimeout(() => this._tick(), 3000);
-        this.onStatus?.('Passive mode - analyzing in a moment...');
+        // Count down the full user-selected interval before the first capture
+        this.timerId = setTimeout(() => this._tick(), this.intervalMs);
+        this._startCountdown(this.intervalMs);
     }
 
     stop() {
