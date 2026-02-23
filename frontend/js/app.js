@@ -68,6 +68,7 @@ class App {
         this.activateBtn.disabled = true;
         this._setStatus('connecting', 'Requesting permissions...');
 
+        // ── Synchronous unlocking (MUST happen before any await) ─────────────────
         // iOS Safari: AudioContext MUST be created synchronously inside a user-gesture
         // handler. Any await before this causes the context to stay suspended and
         // audio to be silently blocked — even on re-activation after a turn-off.
@@ -84,6 +85,15 @@ class App {
         } catch (_) {
             unlockedAudioCtx = null;
         }
+
+        // SpeechSynthesis (fallback TTS) must also be unlocked within a user gesture
+        // on mobile. The first call to speak() must originate here; subsequent calls
+        // from async callbacks are then allowed by the browser.
+        try {
+            const silentUtterance = new SpeechSynthesisUtterance('');
+            silentUtterance.volume = 0;
+            speechSynthesis.speak(silentUtterance);
+        } catch (_) {}
 
         try {
             // 1. Camera
@@ -113,8 +123,11 @@ class App {
 
             // 4. Inject the pre-unlocked AudioContext so PassiveMode reuses it.
             //    This avoids creating a new context (which would be suspended on iOS).
+            //    Then start the keep-alive ping so iOS never auto-suspends it during
+            //    the countdown wait (which can be 30 s – 10 min).
             if (unlockedAudioCtx) {
                 this.passiveMode._sharedAudioCtx = unlockedAudioCtx;
+                this.passiveMode._startContextKeepAlive();
             } else {
                 // Fallback for non-iOS browsers
                 this.passiveMode.unlockAudio();
@@ -131,7 +144,14 @@ class App {
         } catch (error) {
             console.error('Activation failed:', error);
             this._setStatus('error', `Could not activate: ${error.message}`);
-            if (unlockedAudioCtx) { try { unlockedAudioCtx.close(); } catch (_) {} }
+            // destroy() closes the AudioContext; if PassiveMode was never created,
+            // close the context directly.
+            if (this.passiveMode) {
+                this.passiveMode.destroy();
+                this.passiveMode = null;
+            } else if (unlockedAudioCtx) {
+                try { unlockedAudioCtx.close(); } catch (_) {}
+            }
             this.activateBtn.disabled = false;
         }
     }
@@ -140,7 +160,7 @@ class App {
         if (this.mode !== 'passive') return;
 
         if (this.passiveMode) {
-            this.passiveMode.stop();
+            this.passiveMode.destroy();
             this.passiveMode = null;
         }
         this.mediaManager.stop();

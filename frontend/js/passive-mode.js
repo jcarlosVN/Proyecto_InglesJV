@@ -21,6 +21,18 @@ export class PassiveMode {
         this._currentSource = null;   // active BufferSourceNode
         this._countdownId = null;
         this._countdownTarget = 0;
+        this._keepAliveId = null;     // setInterval for silent pings
+
+        // Resume AudioContext when the page returns to foreground.
+        // iOS marks it 'interrupted' when the user switches apps / locks screen.
+        this._onVisibilityChange = () => {
+            if (document.hidden) return;
+            const ctx = this._sharedAudioCtx;
+            if (ctx && ctx.state !== 'running' && ctx.state !== 'closed') {
+                ctx.resume().catch(() => {});
+            }
+        };
+        document.addEventListener('visibilitychange', this._onVisibilityChange);
     }
 
     start() {
@@ -56,8 +68,24 @@ export class PassiveMode {
     }
 
     /**
+     * Full teardown — call when the user deactivates the session.
+     * Stops the timer, clears the keep-alive ping, removes the visibility
+     * listener and closes the AudioContext.
+     */
+    destroy() {
+        this.stop();
+        this._stopContextKeepAlive();
+        document.removeEventListener('visibilitychange', this._onVisibilityChange);
+        if (this._sharedAudioCtx && this._sharedAudioCtx.state !== 'closed') {
+            try { this._sharedAudioCtx.close(); } catch (_) {}
+        }
+        this._sharedAudioCtx = null;
+    }
+
+    /**
      * Must be called from a user-gesture handler (tap/click).
-     * Creates and unlocks the AudioContext for iOS Safari.
+     * Creates and unlocks the AudioContext for iOS Safari, then starts the
+     * keep-alive ping so iOS does not auto-suspend after 30 s of silence.
      */
     unlockAudio() {
         if (!this._sharedAudioCtx || this._sharedAudioCtx.state === 'closed') {
@@ -73,6 +101,42 @@ export class PassiveMode {
         src.buffer = buf;
         src.connect(ctx.destination);
         src.start(0);
+        this._startContextKeepAlive();
+    }
+
+    /**
+     * Plays a 1-sample silent buffer every 5 s to prevent iOS Safari from
+     * auto-suspending the AudioContext during long countdown intervals.
+     */
+    _startContextKeepAlive() {
+        this._stopContextKeepAlive();
+        this._keepAliveId = setInterval(() => {
+            const ctx = this._sharedAudioCtx;
+            if (!ctx || ctx.state === 'closed') {
+                this._stopContextKeepAlive();
+                return;
+            }
+            if (ctx.state === 'running') {
+                // Silent ping to keep the context active on iOS
+                try {
+                    const buf = ctx.createBuffer(1, 1, 24000);
+                    const src = ctx.createBufferSource();
+                    src.buffer = buf;
+                    src.connect(ctx.destination);
+                    src.start(ctx.currentTime);
+                } catch (_) {}
+            } else {
+                // Try to resume if suspended (works on Chrome; may need gesture on iOS)
+                ctx.resume().catch(() => {});
+            }
+        }, 5000);
+    }
+
+    _stopContextKeepAlive() {
+        if (this._keepAliveId) {
+            clearInterval(this._keepAliveId);
+            this._keepAliveId = null;
+        }
     }
 
     setInterval(ms) {
@@ -209,19 +273,29 @@ export class PassiveMode {
             const source = ctx.createBufferSource();
             source.buffer = audioBuffer;
             source.connect(ctx.destination);
-            source.start(0);
+            // Use currentTime (not 0) so we never schedule in the past
+            source.start(ctx.currentTime);
             this._currentSource = source;
             source.onended = () => {
                 if (this._currentSource === source) this._currentSource = null;
             };
         };
 
-        // On iOS Safari the context starts suspended until a user gesture unlocks it.
-        // If still suspended here, try to resume; if that fails, fall back to TTS.
-        if (ctx.state === 'suspended') {
-            ctx.resume().then(doPlay).catch(() => {
-                if (fallbackText) this._speakFallback(fallbackText);
-            });
+        // Check for any non-running state ('suspended' on Chrome, 'interrupted' on iOS)
+        if (ctx.state !== 'running') {
+            ctx.resume()
+                .then(() => {
+                    // Verify the context actually resumed before playing
+                    if (ctx.state === 'running') {
+                        doPlay();
+                    } else {
+                        // Context could not be resumed (iOS requires a new gesture)
+                        if (fallbackText) this._speakFallback(fallbackText);
+                    }
+                })
+                .catch(() => {
+                    if (fallbackText) this._speakFallback(fallbackText);
+                });
         } else {
             doPlay();
         }
@@ -234,20 +308,36 @@ export class PassiveMode {
         utterance.rate = 0.95;
         utterance.pitch = 1.0;
 
-        const voices = speechSynthesis.getVoices();
+        // Mobile browsers preferred voices (Google/Apple voices available on device)
         const preferred = [
-            'Microsoft Jenny',
-            'Microsoft Aria',
-            'Google US English',
-            'Samantha',
-            'Karen',
+            'Samantha',          // iOS default English
+            'Karen',             // iOS Australian
+            'Google US English', // Android Chrome
+            'Microsoft Jenny',   // Windows
+            'Microsoft Aria',    // Windows
         ];
-        for (const name of preferred) {
-            const match = voices.find(v => v.name.includes(name) && v.lang.startsWith('en'));
-            if (match) { utterance.voice = match; break; }
-        }
 
-        speechSynthesis.speak(utterance);
+        const doSpeak = (voices) => {
+            for (const name of preferred) {
+                const match = voices.find(v => v.name.includes(name) && v.lang.startsWith('en'));
+                if (match) { utterance.voice = match; break; }
+            }
+            speechSynthesis.speak(utterance);
+        };
+
+        const voices = speechSynthesis.getVoices();
+        if (voices.length > 0) {
+            doSpeak(voices);
+        } else {
+            // Mobile browsers load voices asynchronously — wait for the event
+            speechSynthesis.addEventListener('voiceschanged', () => {
+                doSpeak(speechSynthesis.getVoices());
+            }, { once: true });
+            // Safety: if voiceschanged never fires, speak with the browser default
+            setTimeout(() => {
+                if (!utterance.voice) speechSynthesis.speak(utterance);
+            }, 1000);
+        }
     }
 
     _captureFrame() {
