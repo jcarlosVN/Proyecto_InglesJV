@@ -8,6 +8,7 @@ export class AudioRecorder {
         this.stream = null;
         this.processor = null;
         this.source = null;
+        this.silentGain = null;
         this.isRecording = false;
     }
 

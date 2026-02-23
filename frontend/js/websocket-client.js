@@ -7,8 +7,6 @@ export class WebSocketClient {
         this.url = url;
         this.ws = null;
         this.handlers = {};
-        this.reconnectAttempts = 0;
-        this.maxReconnectAttempts = 5;
     }
 
     connect() {
@@ -16,7 +14,6 @@ export class WebSocketClient {
             this.ws = new WebSocket(this.url);
 
             this.ws.onopen = () => {
-                this.reconnectAttempts = 0;
                 this._emit('connected');
                 resolve();
             };

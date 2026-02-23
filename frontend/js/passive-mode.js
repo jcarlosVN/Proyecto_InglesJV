@@ -20,6 +20,7 @@ export class PassiveMode {
         this._sharedAudioCtx = null;  // persistent AudioContext (kept alive for iOS)
         this._currentSource = null;   // active BufferSourceNode
         this._countdownId = null;
+        this._countdownTarget = 0;
     }
 
     start() {

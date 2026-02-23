@@ -151,7 +151,6 @@ header h1 {
 .btn-activate {
     background: linear-gradient(135deg, #7c6ff7 0%, #38bdf8 100%);
     color: #fff;
-    border: none;
     border-radius: 10px;
     padding: 0.85rem 2.2rem;
     font-size: 1rem;

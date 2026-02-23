@@ -51,13 +51,4 @@ export class AudioPlayer {
         }
         this.nextStartTime = 0;
     }
-
-    /** Interrupt current playback (e.g., when user starts speaking) */
-    interrupt() {
-        if (this.audioContext) {
-            this.audioContext.close();
-            this.audioContext = new AudioContext({ sampleRate: 24000 });
-            this.nextStartTime = 0;
-        }
-    }
 }
