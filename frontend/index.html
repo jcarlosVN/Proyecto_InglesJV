@@ -90,6 +90,12 @@
         </main>
     </div>
 
+    <!-- Error toast — shown when passive mode fails (quota, network, etc.) -->
+    <div id="error-toast" class="error-toast hidden" role="alert">
+        <span id="error-toast-msg"></span>
+        <button id="error-toast-close" class="error-toast-close" aria-label="Dismiss">&#10005;</button>
+    </div>
+
     <script type="module" src="/static/js/app.js"></script>
 </body>
 </html>

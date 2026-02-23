@@ -36,6 +36,9 @@ class App {
         this.activateBtn = document.getElementById('btn-activate');
         this.deactivateBtn = document.getElementById('btn-deactivate');
         this.flipCameraBtn = document.getElementById('btn-flip-camera');
+        this.errorToast = document.getElementById('error-toast');
+        this.errorToastMsg = document.getElementById('error-toast-msg');
+        this._errorDismissTimer = null;
 
         this._bindEvents();
         // User must tap Activate — nothing runs automatically
@@ -47,6 +50,7 @@ class App {
         this.activateBtn.addEventListener('click', () => this._activate());
         this.deactivateBtn.addEventListener('click', () => this._deactivate());
         this.flipCameraBtn.addEventListener('click', () => this._flipCamera());
+        document.getElementById('error-toast-close').addEventListener('click', () => this._hideError());
 
         this.frequencySelect.addEventListener('change', () => {
             const ms = parseInt(this.frequencySelect.value);
@@ -63,6 +67,24 @@ class App {
     async _activate() {
         this.activateBtn.disabled = true;
         this._setStatus('connecting', 'Requesting permissions...');
+
+        // iOS Safari: AudioContext MUST be created synchronously inside a user-gesture
+        // handler. Any await before this causes the context to stay suspended and
+        // audio to be silently blocked — even on re-activation after a turn-off.
+        let unlockedAudioCtx = null;
+        try {
+            unlockedAudioCtx = new AudioContext({ sampleRate: 24000 });
+            if (unlockedAudioCtx.state === 'suspended') unlockedAudioCtx.resume();
+            // Play a 1-sample silent buffer — required to fully unlock iOS audio
+            const buf = unlockedAudioCtx.createBuffer(1, 1, 24000);
+            const src = unlockedAudioCtx.createBufferSource();
+            src.buffer = buf;
+            src.connect(unlockedAudioCtx.destination);
+            src.start(0);
+        } catch (_) {
+            unlockedAudioCtx = null;
+        }
+
         try {
             // 1. Camera
             await this.mediaManager.requestCameraAndMic(this._facingMode);
@@ -86,11 +108,17 @@ class App {
                 videoElement: this.videoEl,
                 onTopic: (text) => this._onTopicSuggested(text),
                 onStatus: (msg) => this._onPassiveStatus(msg),
-                onError: (msg) => this._setStatus('error', `Error: ${msg}`),
+                onError: (msg) => this._showError(msg),
             });
 
-            // 4. Unlock AudioContext while still in user-gesture context (iOS Safari)
-            this.passiveMode.unlockAudio();
+            // 4. Inject the pre-unlocked AudioContext so PassiveMode reuses it.
+            //    This avoids creating a new context (which would be suspended on iOS).
+            if (unlockedAudioCtx) {
+                this.passiveMode._sharedAudioCtx = unlockedAudioCtx;
+            } else {
+                // Fallback for non-iOS browsers
+                this.passiveMode.unlockAudio();
+            }
 
             // 5. UI: enable controls
             this.frequencySelect.disabled = false;
@@ -103,6 +131,7 @@ class App {
         } catch (error) {
             console.error('Activation failed:', error);
             this._setStatus('error', `Could not activate: ${error.message}`);
+            if (unlockedAudioCtx) { try { unlockedAudioCtx.close(); } catch (_) {} }
             this.activateBtn.disabled = false;
         }
     }
@@ -139,33 +168,26 @@ class App {
     async _flipCamera() {
         if (this.mode !== 'passive' || !this.mediaManager.stream) return;
 
-        const wasActive = this.passiveMode?.isActive;
-        if (this.passiveMode) this.passiveMode.stop();
-
-        this._facingMode = this._facingMode === 'user' ? 'environment' : 'user';
-        this._setStatus('connecting', 'Switching camera...');
+        const prevFacingMode = this._facingMode;
+        this._facingMode = prevFacingMode === 'user' ? 'environment' : 'user';
 
         try {
+            // Only swap the media stream — passiveMode reads the videoElement via
+            // drawImage() and is completely unaware of camera changes, so the timer
+            // and countdown continue running without any interruption.
             await this.mediaManager.requestCameraAndMic(this._facingMode);
             this.mediaManager.attachToVideo(this.videoEl);
             await this.videoEl.play();
             this.videoEl.style.transform = this._facingMode === 'user' ? 'scaleX(-1)' : 'scaleX(1)';
-
-            if (wasActive) {
-                const ms = parseInt(this.frequencySelect.value);
-                if (ms > 0) {
-                    this.passiveMode.setInterval(ms);
-                    this._setStatus('passive', 'Watching...');
-                } else {
-                    this._setStatus('idle', 'Ready — choose a topic interval');
-                }
-            } else {
-                this._setStatus('idle', 'Ready — choose a topic interval');
-            }
         } catch (error) {
-            this._facingMode = this._facingMode === 'user' ? 'environment' : 'user';
-            this.videoEl.style.transform = this._facingMode === 'user' ? 'scaleX(-1)' : 'scaleX(1)';
-            this._setStatus('error', 'Could not switch camera');
+            // Restore previous facing mode on failure
+            this._facingMode = prevFacingMode;
+            try {
+                await this.mediaManager.requestCameraAndMic(this._facingMode);
+                this.mediaManager.attachToVideo(this.videoEl);
+                await this.videoEl.play();
+            } catch (_) {}
+            this._showError('Could not switch camera');
         }
     }
 
@@ -318,6 +340,21 @@ class App {
     }
 
     // ─── Helpers ───────────────────────────────────────────────────────────────
+
+    _showError(msg) {
+        if (this._errorDismissTimer) clearTimeout(this._errorDismissTimer);
+        this.errorToastMsg.textContent = msg;
+        this.errorToast.classList.remove('hidden');
+        this._errorDismissTimer = setTimeout(() => this._hideError(), 6000);
+    }
+
+    _hideError() {
+        this.errorToast.classList.add('hidden');
+        if (this._errorDismissTimer) {
+            clearTimeout(this._errorDismissTimer);
+            this._errorDismissTimer = null;
+        }
+    }
 
     _setStatus(state, message) {
         this.statusEl.textContent = message;
